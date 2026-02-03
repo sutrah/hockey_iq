@@ -69,6 +69,7 @@ const FRICTION = 0.985;
 const PLAYER_FRICTION = 0.9;
 const GOAL_WIDTH_RATIO = 0.12;
 const GOAL_DEPTH = 20;
+const BEHIND_GOAL_DEPTH = 0.06; // space behind goals as ratio of rinkW
 
 let W, H, rinkX, rinkY, rinkW, rinkH;
 let gameState = 'menu'; // menu, playing, paused, goal
@@ -148,8 +149,9 @@ function createPlayer(team, role, number, x, y) {
 function getBluePositions() {
     const cx = rinkX + rinkW / 2;
     const cy = rinkY + rinkH / 2;
+    const behindDepth = rinkW * BEHIND_GOAL_DEPTH;
     return [
-        { role:'goalie', num:30, x: rinkX + 35, y: cy },
+        { role:'goalie', num:30, x: rinkX + behindDepth + GOAL_DEPTH + 15, y: cy },
         { role:'defense', num:4, x: rinkX + rinkW*0.2, y: cy - rinkH*0.2 },
         { role:'defense', num:5, x: rinkX + rinkW*0.2, y: cy + rinkH*0.2 },
         { role:'center', num:1, x: cx - 20, y: cy },
@@ -161,8 +163,9 @@ function getBluePositions() {
 function getRedPositions() {
     const cx = rinkX + rinkW / 2;
     const cy = rinkY + rinkH / 2;
+    const behindDepth = rinkW * BEHIND_GOAL_DEPTH;
     return [
-        { role:'goalie', num:31, x: rinkX + rinkW - 35, y: cy },
+        { role:'goalie', num:31, x: rinkX + rinkW - behindDepth - GOAL_DEPTH - 15, y: cy },
         { role:'defense', num:4, x: rinkX + rinkW*0.8, y: cy - rinkH*0.2 },
         { role:'defense', num:5, x: rinkX + rinkW*0.8, y: cy + rinkH*0.2 },
         { role:'center', num:1, x: cx + 20, y: cy },
@@ -234,11 +237,13 @@ function canIntercept(fromX, fromY, toX, toY, enemies) {
 // --- GOAL ZONES ---
 function getGoalLeft() {
     const gw = rinkH * GOAL_WIDTH_RATIO;
-    return { x: rinkX, y: rinkY + rinkH/2 - gw/2, w: GOAL_DEPTH, h: gw };
+    const behindDepth = rinkW * BEHIND_GOAL_DEPTH;
+    return { x: rinkX + behindDepth, y: rinkY + rinkH/2 - gw/2, w: GOAL_DEPTH, h: gw };
 }
 function getGoalRight() {
     const gw = rinkH * GOAL_WIDTH_RATIO;
-    return { x: rinkX + rinkW - GOAL_DEPTH, y: rinkY + rinkH/2 - gw/2, w: GOAL_DEPTH, h: gw };
+    const behindDepth = rinkW * BEHIND_GOAL_DEPTH;
+    return { x: rinkX + rinkW - behindDepth - GOAL_DEPTH, y: rinkY + rinkH/2 - gw/2, w: GOAL_DEPTH, h: gw };
 }
 
 function isInGoal(px, py, goal) {
@@ -390,7 +395,7 @@ function updateBlueAI(player, idx) {
         // Goalie AI
         const goalL = getGoalLeft();
         const targetY = clamp(puck.y, goalL.y + 10, goalL.y + goalL.h - 10);
-        const targetX = rinkX + 30;
+        const targetX = goalL.x + goalL.w + 12;
         moveTowards(player, targetX, targetY, GOALIE_SPEED);
 
         // Goalie auto-pass when has puck
@@ -430,9 +435,30 @@ function updateBlueAI(player, idx) {
         targetY = clamp(targetY, rinkY + 30, rinkY + rinkH - 30);
         moveTowards(player, targetX, targetY, AI_SPEED);
     } else {
-        // Defensive: return towards home
+        // Red has puck or loose puck: actively pursue
         let targetX = player.homeX;
         let targetY = player.homeY;
+
+        const dToPuck = dist(player, puck);
+
+        if (player.role === 'center' || player.role === 'wing') {
+            // Forwards chase the puck aggressively
+            if (dToPuck < rinkW * 0.35) {
+                targetX = puck.x;
+                targetY = puck.y;
+                moveTowards(player, targetX, targetY, AI_SPEED * 1.1);
+                return;
+            } else {
+                // Fall back but stay ready
+                targetX = player.homeX - rinkW * 0.05;
+                targetY = player.homeY;
+            }
+        } else if (player.role === 'defense') {
+            // Defenders stay back but track puck laterally
+            targetX = Math.min(puck.x - rinkW * 0.05, rinkX + rinkW * 0.3);
+            targetX = Math.max(targetX, rinkX + 60);
+            targetY = clamp(puck.y, player.homeY - rinkH * 0.15, player.homeY + rinkH * 0.15);
+        }
 
         // Wander slightly
         player.wanderTimer++;
@@ -440,12 +466,12 @@ function updateBlueAI(player, idx) {
             player.wanderAngle += (Math.random() - 0.5) * 0.5;
             player.wanderTimer = 0;
         }
-        targetX += Math.cos(player.wanderAngle) * 30;
-        targetY += Math.sin(player.wanderAngle) * 30;
+        targetX += Math.cos(player.wanderAngle) * 20;
+        targetY += Math.sin(player.wanderAngle) * 20;
 
         targetX = clamp(targetX, rinkX + 30, rinkX + rinkW - 30);
         targetY = clamp(targetY, rinkY + 30, rinkY + rinkH - 30);
-        moveTowards(player, targetX, targetY, AI_SPEED * 0.8);
+        moveTowards(player, targetX, targetY, AI_SPEED * 0.9);
     }
 }
 
@@ -456,7 +482,7 @@ function updateRedAI(player, idx) {
     if (player.role === 'goalie') {
         const goalR = getGoalRight();
         const targetY = clamp(puck.y, goalR.y + 10, goalR.y + goalR.h - 10);
-        const targetX = rinkX + rinkW - 30;
+        const targetX = goalR.x - 12;
         moveTowards(player, targetX, targetY, GOALIE_SPEED);
 
         // Goalie auto-pass when has puck
@@ -478,25 +504,44 @@ function updateRedAI(player, idx) {
     if (player.hasPuck) {
         // Attack: move towards blue goal
         const goalL = getGoalLeft();
-        const targetX = rinkX + rinkW * 0.15;
-        const targetY = rinkY + rinkH / 2;
+        const goalCenterY = goalL.y + goalL.h / 2;
+        const distToGoal = player.x - (goalL.x + goalL.w);
 
-        // If close to goal, shoot
-        if (player.x < rinkX + rinkW * 0.3) {
-            const goalCenterY = goalL.y + goalL.h / 2;
-            const shootY = goalCenterY + (Math.random() - 0.5) * goalL.h * 0.6;
-            makeShot(player, rinkX, shootY);
-            return;
+        // Determine lane based on role to avoid stacking
+        let laneY;
+        if (player.role === 'wing' && player.number === 2) {
+            laneY = rinkY + rinkH * 0.28; // top lane
+        } else if (player.role === 'wing' && player.number === 3) {
+            laneY = rinkY + rinkH * 0.72; // bottom lane
+        } else {
+            laneY = rinkY + rinkH / 2; // center lane
         }
 
-        // Check if should pass
+        // Shoot when in good shooting range
+        if (distToGoal < rinkW * 0.25) {
+            // Shoot with some randomization
+            if (Math.random() < 0.04 || distToGoal < rinkW * 0.12) {
+                const shootY = goalCenterY + (Math.random() - 0.5) * goalL.h * 0.8;
+                makeShot(player, goalL.x + goalL.w / 2, shootY);
+                return;
+            }
+        }
+
+        // Check if should pass to a better-positioned teammate
         const allRed = redPlayers.filter(p => p !== player && p.role !== 'goalie');
-        const betterPos = allRed.find(p => p.x < player.x - 30 && !canIntercept(player.x, player.y, p.x, p.y, bluePlayers));
-        if (betterPos && Math.random() < 0.02) {
+        const betterPos = allRed.find(p =>
+            p.x < player.x - 20 &&
+            Math.abs(p.x - (goalL.x + goalL.w)) < distToGoal &&
+            !canIntercept(player.x, player.y, p.x, p.y, bluePlayers)
+        );
+        if (betterPos && Math.random() < 0.03) {
             makePass(player, betterPos);
             return;
         }
 
+        // Move towards goal along assigned lane
+        const targetX = goalL.x + goalL.w + rinkW * 0.1;
+        const targetY = laneY + Math.sin(Date.now() * 0.003 + idx * 2) * rinkH * 0.06;
         moveTowards(player, targetX, targetY, AI_SPEED);
 
         // Avoid blue players
@@ -505,24 +550,43 @@ function updateRedAI(player, idx) {
             if (d < 50 && d > 0) {
                 const ax = (player.x - bp.x) / d;
                 const ay = (player.y - bp.y) / d;
-                player.vx += ax * 0.5;
-                player.vy += ay * 0.5;
+                player.vx += ax * 0.6;
+                player.vy += ay * 0.6;
             }
         }
     } else if (redHasPuck) {
-        // Support attack
+        // Support attack - spread into lanes, don't converge
         const carrier = puck.owner;
         let targetX, targetY;
 
         if (player.role === 'defense') {
-            targetX = Math.max(carrier.x + rinkW * 0.12, rinkX + rinkW * 0.55);
+            // Defenders stay back as support
+            targetX = Math.max(carrier.x + rinkW * 0.15, rinkX + rinkW * 0.55);
             targetY = player.homeY + Math.sin(Date.now() * 0.002 + idx) * rinkH * 0.08;
         } else if (player.role === 'center') {
-            targetX = carrier.x - rinkW * 0.08;
-            targetY = rinkY + rinkH / 2 + Math.sin(Date.now() * 0.0018 + idx) * rinkH * 0.15;
+            // Center goes slightly ahead of carrier, middle of ice
+            targetX = Math.max(carrier.x - rinkW * 0.1, rinkX + rinkW * 0.15);
+            targetY = rinkY + rinkH / 2 + Math.sin(Date.now() * 0.002 + idx) * rinkH * 0.12;
+        } else if (player.number === 2) {
+            // Wing 2: top lane, ahead of carrier
+            targetX = Math.max(carrier.x - rinkW * 0.12, rinkX + rinkW * 0.15);
+            targetY = rinkY + rinkH * 0.25 + Math.sin(Date.now() * 0.0025 + idx) * rinkH * 0.08;
         } else {
-            targetX = Math.max(carrier.x - rinkW * 0.12, rinkX + rinkW * 0.25);
-            targetY = player.homeY + Math.sin(Date.now() * 0.0022 + idx) * rinkH * 0.12;
+            // Wing 3: bottom lane, ahead of carrier
+            targetX = Math.max(carrier.x - rinkW * 0.12, rinkX + rinkW * 0.15);
+            targetY = rinkY + rinkH * 0.75 + Math.sin(Date.now() * 0.0025 + idx) * rinkH * 0.08;
+        }
+
+        // Avoid overlapping with other red players
+        for (const rp of redPlayers) {
+            if (rp === player || rp.role === 'goalie') continue;
+            const d = dist(player, rp);
+            if (d < 45 && d > 0) {
+                const ax = (player.x - rp.x) / d;
+                const ay = (player.y - rp.y) / d;
+                player.vx += ax * 0.4;
+                player.vy += ay * 0.4;
+            }
         }
 
         targetX = clamp(targetX, rinkX + 30, rinkX + rinkW - 30);
@@ -650,11 +714,12 @@ function update() {
         if (puck.x < rinkX + PUCK_RADIUS) { puck.x = rinkX + PUCK_RADIUS; puck.vx *= -0.7; }
         if (puck.x > rinkX + rinkW - PUCK_RADIUS) { puck.x = rinkX + rinkW - PUCK_RADIUS; puck.vx *= -0.7; }
 
-        // Puck pickup
+        // Puck pickup (blue has slightly wider pickup range)
         for (const p of allPlayers) {
             const d = dist(p, puck);
-            if (d < p.radius + PUCK_RADIUS + 3) {
-                // If puck has a target, only target can pick it up (or interceptor)
+            const pickupBonus = p.team === 'blue' ? 6 : 3;
+            if (d < p.radius + PUCK_RADIUS + pickupBonus) {
+                // If puck has a target, only target can pick it up (or interceptor from other team)
                 if (puck.targetPlayer && p.team === puck.targetPlayer.team && p !== puck.targetPlayer) continue;
 
                 puck.owner = p;
@@ -690,15 +755,21 @@ function update() {
                 b.x += nx * overlap * 0.5;
                 b.y += ny * overlap * 0.5;
 
-                // Transfer puck on collision
-                if (a.hasPuck && Math.random() < 0.5) {
-                    a.hasPuck = false;
-                    b.hasPuck = true;
-                    puck.owner = b;
-                } else if (b.hasPuck && Math.random() < 0.5) {
-                    b.hasPuck = false;
-                    a.hasPuck = true;
-                    puck.owner = a;
+                // Transfer puck on collision (blue recovers more easily)
+                if (a.hasPuck) {
+                    const stealChance = b.team === 'blue' ? 0.65 : 0.4;
+                    if (Math.random() < stealChance) {
+                        a.hasPuck = false;
+                        b.hasPuck = true;
+                        puck.owner = b;
+                    }
+                } else if (b.hasPuck) {
+                    const stealChance = a.team === 'blue' ? 0.65 : 0.4;
+                    if (Math.random() < stealChance) {
+                        b.hasPuck = false;
+                        a.hasPuck = true;
+                        puck.owner = a;
+                    }
                 }
 
                 // Bounce velocity
@@ -880,12 +951,12 @@ function drawRink() {
 
     // Goal creases (semi-circles)
     ctx.beginPath();
-    ctx.arc(rinkX, rinkY + rinkH/2, rinkH * 0.1, -Math.PI/2, Math.PI/2);
+    ctx.arc(goalL.x + goalL.w, rinkY + rinkH/2, rinkH * 0.1, -Math.PI/2, Math.PI/2);
     ctx.strokeStyle = LINE_RED;
     ctx.lineWidth = 2;
     ctx.stroke();
     ctx.beginPath();
-    ctx.arc(rinkX + rinkW, rinkY + rinkH/2, rinkH * 0.1, Math.PI/2, -Math.PI/2);
+    ctx.arc(goalR.x, rinkY + rinkH/2, rinkH * 0.1, Math.PI/2, -Math.PI/2);
     ctx.stroke();
 
     // Goal areas (red rectangles)
@@ -1304,7 +1375,7 @@ canvas.addEventListener('mousedown', (e) => {
         if (carrier) {
             const goalR = getGoalRight();
             const goalCY = goalR.y + goalR.h / 2;
-            makeShot(carrier, rinkX + rinkW, goalCY + (Math.random()-0.5) * goalR.h * 0.5);
+            makeShot(carrier, goalR.x + goalR.w / 2, goalCY + (Math.random()-0.5) * goalR.h * 0.5);
         }
     }
 });
@@ -1328,7 +1399,7 @@ canvas.addEventListener('touchstart', (e) => {
         if (carrier) {
             const goalR = getGoalRight();
             const goalCY = goalR.y + goalR.h / 2;
-            makeShot(carrier, rinkX + rinkW, goalCY + (Math.random()-0.5) * goalR.h * 0.3);
+            makeShot(carrier, goalR.x + goalR.w / 2, goalCY + (Math.random()-0.5) * goalR.h * 0.3);
         }
         lastTapTime = 0;
         return;
