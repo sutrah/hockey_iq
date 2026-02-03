@@ -60,10 +60,10 @@ const PLAYER_RADIUS = 14;
 const GOALIE_RADIUS = 18;
 const PUCK_RADIUS = 6;
 const PUCK_SPEED = 12;
-const PASS_SPEED = 9;
+const PASS_SPEED = 14;
 const SHOT_SPEED = 14;
 const PLAYER_SPEED = 3.2;
-const AI_SPEED = 2.8;
+const AI_SPEED = 2.0;
 const GOALIE_SPEED = 2.5;
 const FRICTION = 0.985;
 const PLAYER_FRICTION = 0.9;
@@ -509,16 +509,30 @@ function updateRedAI(player, idx) {
         return rinkY + rinkH * 0.5;
     }
 
-    // --- Helper: push away from other red skaters ---
+    // --- Helper: push away from other red skaters (HARD position enforcement) ---
     function separateFromTeammates(p) {
+        const MIN_DIST = 110;
         for (const rp of redPlayers) {
             if (rp === p || rp.role === 'goalie') continue;
             const d = dist(p, rp);
-            if (d < 80 && d > 0) {
-                const force = (80 - d) / 80 * 0.8;
-                p.vx += ((p.x - rp.x) / d) * force;
-                p.vy += ((p.y - rp.y) / d) * force;
+            if (d < MIN_DIST && d > 0) {
+                const nx = (p.x - rp.x) / d;
+                const ny = (p.y - rp.y) / d;
+                const push = (MIN_DIST - d) / 2;
+                // Hard position teleport
+                p.x += nx * push;
+                p.y += ny * push;
+                // Also add velocity push
+                p.vx += nx * 1.5;
+                p.vy += ny * 1.5;
             }
+        }
+        // Strong lane Y enforcement
+        const laneY = getRedLaneY(p);
+        const yDiff = laneY - p.y;
+        if (Math.abs(yDiff) > 20) {
+            p.y += yDiff * 0.08;
+            p.vy += yDiff * 0.02;
         }
     }
 
@@ -529,9 +543,9 @@ function updateRedAI(player, idx) {
         const distToGoal = player.x - (goalL.x + goalL.w);
         const laneY = getRedLaneY(player);
 
-        // Shoot when in good shooting range
-        if (distToGoal < rinkW * 0.25) {
-            if (Math.random() < 0.05 || distToGoal < rinkW * 0.12) {
+        // Shoot when in good shooting range (reduced frequency)
+        if (distToGoal < rinkW * 0.2) {
+            if (Math.random() < 0.02 || distToGoal < rinkW * 0.08) {
                 const shootY = goalCenterY + (Math.random() - 0.5) * goalL.h * 0.8;
                 makeShot(player, goalL.x + goalL.w / 2, shootY);
                 return;
@@ -589,12 +603,13 @@ function updateRedAI(player, idx) {
         let targetY = player.homeY;
 
         if (player.role === 'defense') {
-            targetX = clamp(puck.x + 40, rinkX + rinkW * 0.55, rinkX + rinkW - 50);
-            targetY = clamp(puck.y, rinkY + 40, rinkY + rinkH - 40);
+            // Defense stays back more, less aggressive
+            targetX = clamp(puck.x + 80, rinkX + rinkW * 0.6, rinkX + rinkW - 50);
+            targetY = clamp(puck.y, player.homeY - rinkH * 0.2, player.homeY + rinkH * 0.2);
         } else {
-            // Chase puck
+            // Chase puck (reduced range)
             const dToPuck = dist(player, puck);
-            if (dToPuck < rinkW * 0.3) {
+            if (dToPuck < rinkW * 0.18) {
                 targetX = puck.x;
                 targetY = puck.y;
             } else {
@@ -650,6 +665,30 @@ function update() {
     // --- RED AI ---
     redPlayers.forEach((p, i) => updateRedAI(p, i));
 
+    // --- ENFORCE RED SEPARATION (hard position fix after all AI) ---
+    {
+        const forwards = redPlayers.filter(p => p.role !== 'goalie' && p.role !== 'defense');
+        const MIN_SEP = 120;
+        for (let iter = 0; iter < 3; iter++) { // multiple iterations for stability
+            for (let i = 0; i < forwards.length; i++) {
+                for (let j = i + 1; j < forwards.length; j++) {
+                    const a = forwards[i];
+                    const b = forwards[j];
+                    const d = dist(a, b);
+                    if (d < MIN_SEP && d > 0) {
+                        const nx = (b.x - a.x) / d;
+                        const ny = (b.y - a.y) / d;
+                        const push = (MIN_SEP - d) / 2 + 1;
+                        a.x -= nx * push;
+                        a.y -= ny * push;
+                        b.x += nx * push;
+                        b.y += ny * push;
+                    }
+                }
+            }
+        }
+    }
+
     // --- PHYSICS ---
     const allPlayers = [...bluePlayers, ...redPlayers];
     for (const p of allPlayers) {
@@ -688,15 +727,15 @@ function update() {
         const goalL = getGoalLeft();
         const goalR = getGoalRight();
 
-        if (isInGoal(puck.x, puck.y, goalR)) {
-            // Blue scores!
+        if (isInGoal(puck.x, puck.y, goalR) && puck.vx > 0) {
+            // Blue scores! (puck must enter goal from the front, moving right)
             score.blue++;
             lastGoalTeam = 'blue';
             goalTimer = 120;
             return;
         }
-        if (isInGoal(puck.x, puck.y, goalL)) {
-            // Red scores!
+        if (isInGoal(puck.x, puck.y, goalL) && puck.vx < 0) {
+            // Red scores! (puck must enter goal from the front, moving left)
             score.red++;
             lastGoalTeam = 'red';
             goalTimer = 120;
@@ -706,12 +745,28 @@ function update() {
         if (puck.x < rinkX + PUCK_RADIUS) { puck.x = rinkX + PUCK_RADIUS; puck.vx *= -0.7; }
         if (puck.x > rinkX + rinkW - PUCK_RADIUS) { puck.x = rinkX + rinkW - PUCK_RADIUS; puck.vx *= -0.7; }
 
-        // Puck pickup (blue has slightly wider pickup range)
-        for (const p of allPlayers) {
+        // Puck pickup (blue has priority, passes protected)
+        // Check blue players first for priority pickup
+        const blueFirst = [...bluePlayers, ...redPlayers];
+        for (const p of blueFirst) {
             const d = dist(p, puck);
-            const pickupBonus = p.team === 'blue' ? 6 : 3;
+            const pickupBonus = p.team === 'blue' ? 8 : 2;
+
+            // If this is a blue pass, red players can only intercept if VERY close
+            if (puck.targetPlayer && puck.targetPlayer.team === 'blue' && p.team === 'red') {
+                // Red can only intercept a blue pass if within half their radius
+                if (d < p.radius * 0.5 + PUCK_RADIUS) {
+                    puck.owner = p;
+                    p.hasPuck = true;
+                    puck.targetPlayer = null;
+                    allPlayers.forEach(pl => { if (pl !== p) pl.hasPuck = false; });
+                    break;
+                }
+                continue; // Skip this red player, pass is protected
+            }
+
             if (d < p.radius + PUCK_RADIUS + pickupBonus) {
-                // If puck has a target, only target can pick it up (or interceptor from other team)
+                // If puck has a target, same-team non-target can't pick it up
                 if (puck.targetPlayer && p.team === puck.targetPlayer.team && p !== puck.targetPlayer) continue;
 
                 puck.owner = p;
@@ -754,24 +809,24 @@ function update() {
                         stealer = b; loser = a;
                     } else if (b.hasPuck && a.team === 'blue') {
                         stealer = a; loser = b;
-                    } else if (a.hasPuck && b.team === 'red' && Math.random() < 0.25) {
+                    } else if (a.hasPuck && b.team === 'red' && Math.random() < 0.08) {
                         stealer = b; loser = a;
-                    } else if (b.hasPuck && a.team === 'red' && Math.random() < 0.25) {
+                    } else if (b.hasPuck && a.team === 'red' && Math.random() < 0.08) {
                         stealer = a; loser = b;
                     }
                     if (stealer && loser) {
                         loser.hasPuck = false;
                         stealer.hasPuck = true;
                         puck.owner = stealer;
-                        puckStealCooldown = 60;
+                        puckStealCooldown = 180; // 3 seconds immunity
                         // Push stealer away from loser to escape
                         const pushDx = stealer.x - loser.x;
                         const pushDy = stealer.y - loser.y;
                         const pushD = Math.sqrt(pushDx*pushDx + pushDy*pushDy) || 1;
-                        stealer.vx += (pushDx / pushD) * 4;
-                        stealer.vy += (pushDy / pushD) * 4;
-                        loser.vx -= (pushDx / pushD) * 2;
-                        loser.vy -= (pushDy / pushD) * 2;
+                        stealer.vx += (pushDx / pushD) * 6;
+                        stealer.vy += (pushDy / pushD) * 6;
+                        loser.vx -= (pushDx / pushD) * 3;
+                        loser.vy -= (pushDy / pushD) * 3;
                     }
                 }
 
@@ -1353,18 +1408,52 @@ canvas.addEventListener('wheel', (e) => {
     }
 }, { passive: false });
 
+// Prevent context menu on canvas globally
+canvas.addEventListener('contextmenu', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    return false;
+});
+
+// Prevent context menu on document too as fallback
+document.addEventListener('contextmenu', (e) => {
+    if (gameState === 'playing') {
+        e.preventDefault();
+        e.stopPropagation();
+        return false;
+    }
+});
+
+let rightClickShotFired = false;
+
+function shootBlue() {
+    const carrier = getBlueWithPuck();
+    if (!carrier) return false;
+    const goalR = getGoalRight();
+    const goalCY = goalR.y + goalR.h / 2;
+    makeShot(carrier, goalR.x + goalR.w / 2, goalCY + (Math.random()-0.5) * goalR.h * 0.5);
+    return true;
+}
+
 canvas.addEventListener('mousedown', (e) => {
     if (gameState !== 'playing') return;
 
-    // Check HUD buttons
-    for (const btn of buttons) {
-        if (e.clientX >= btn.x && e.clientX <= btn.x + btn.w && e.clientY >= btn.y && e.clientY <= btn.y + btn.h) {
-            btn.action();
-            return;
-        }
+    if (e.button === 2) {
+        // Right click: shoot (primary handler)
+        e.preventDefault();
+        rightClickShotFired = false;
+        if (shootBlue()) rightClickShotFired = true;
+        return;
     }
 
+    // Check HUD buttons (left click only)
     if (e.button === 0) {
+        for (const btn of buttons) {
+            if (e.clientX >= btn.x && e.clientX <= btn.x + btn.w && e.clientY >= btn.y && e.clientY <= btn.y + btn.h) {
+                btn.action();
+                return;
+            }
+        }
         // Left click: pass
         const carrier = getBlueWithPuck();
         if (carrier) {
@@ -1373,30 +1462,17 @@ canvas.addEventListener('mousedown', (e) => {
                 makePass(carrier, target);
             }
         }
-    } else if (e.button === 2) {
-        // Right click: shoot
+    }
+});
+
+// Fallback: also handle right-click via mouseup in case mousedown doesn't fire for button 2
+canvas.addEventListener('mouseup', (e) => {
+    if (e.button === 2 && gameState === 'playing' && !rightClickShotFired) {
+        e.preventDefault();
         shootBlue();
     }
+    rightClickShotFired = false;
 });
-
-canvas.addEventListener('contextmenu', (e) => {
-    e.preventDefault();
-    // Also handle shoot here as some browsers block mousedown for right-click
-    if (gameState === 'playing') shootBlue();
-});
-
-let lastShotTime = 0;
-function shootBlue() {
-    const now = Date.now();
-    if (now - lastShotTime < 100) return; // prevent double-fire from mousedown+contextmenu
-    const carrier = getBlueWithPuck();
-    if (carrier) {
-        lastShotTime = now;
-        const goalR = getGoalRight();
-        const goalCY = goalR.y + goalR.h / 2;
-        makeShot(carrier, goalR.x + goalR.w / 2, goalCY + (Math.random()-0.5) * goalR.h * 0.5);
-    }
-}
 
 // --- INPUT: TOUCH ---
 canvas.addEventListener('touchstart', (e) => {
