@@ -81,6 +81,7 @@ let mouseX = 0, mouseY = 0;
 let goalTimer = 0;
 let lastGoalTeam = '';
 let isPaused = false;
+let puckStealCooldown = 0; // frames of immunity after stealing the puck
 
 // Touch state
 let touchActive = false;
@@ -501,26 +502,36 @@ function updateRedAI(player, idx) {
         return;
     }
 
+    // --- Helper: get lane Y for this player to avoid stacking ---
+    function getRedLaneY(p) {
+        if (p.role === 'wing' && p.number === 2) return rinkY + rinkH * 0.2;
+        if (p.role === 'wing' && p.number === 3) return rinkY + rinkH * 0.8;
+        return rinkY + rinkH * 0.5;
+    }
+
+    // --- Helper: push away from other red skaters ---
+    function separateFromTeammates(p) {
+        for (const rp of redPlayers) {
+            if (rp === p || rp.role === 'goalie') continue;
+            const d = dist(p, rp);
+            if (d < 80 && d > 0) {
+                const force = (80 - d) / 80 * 0.8;
+                p.vx += ((p.x - rp.x) / d) * force;
+                p.vy += ((p.y - rp.y) / d) * force;
+            }
+        }
+    }
+
     if (player.hasPuck) {
         // Attack: move towards blue goal
         const goalL = getGoalLeft();
         const goalCenterY = goalL.y + goalL.h / 2;
         const distToGoal = player.x - (goalL.x + goalL.w);
-
-        // Determine lane based on role to avoid stacking
-        let laneY;
-        if (player.role === 'wing' && player.number === 2) {
-            laneY = rinkY + rinkH * 0.28; // top lane
-        } else if (player.role === 'wing' && player.number === 3) {
-            laneY = rinkY + rinkH * 0.72; // bottom lane
-        } else {
-            laneY = rinkY + rinkH / 2; // center lane
-        }
+        const laneY = getRedLaneY(player);
 
         // Shoot when in good shooting range
         if (distToGoal < rinkW * 0.25) {
-            // Shoot with some randomization
-            if (Math.random() < 0.04 || distToGoal < rinkW * 0.12) {
+            if (Math.random() < 0.05 || distToGoal < rinkW * 0.12) {
                 const shootY = goalCenterY + (Math.random() - 0.5) * goalL.h * 0.8;
                 makeShot(player, goalL.x + goalL.w / 2, shootY);
                 return;
@@ -548,50 +559,30 @@ function updateRedAI(player, idx) {
         for (const bp of bluePlayers) {
             const d = dist(player, bp);
             if (d < 50 && d > 0) {
-                const ax = (player.x - bp.x) / d;
-                const ay = (player.y - bp.y) / d;
-                player.vx += ax * 0.6;
-                player.vy += ay * 0.6;
+                player.vx += ((player.x - bp.x) / d) * 0.6;
+                player.vy += ((player.y - bp.y) / d) * 0.6;
             }
         }
+        separateFromTeammates(player);
     } else if (redHasPuck) {
-        // Support attack - spread into lanes, don't converge
+        // Support attack - spread into lanes
         const carrier = puck.owner;
+        const laneY = getRedLaneY(player);
         let targetX, targetY;
 
         if (player.role === 'defense') {
-            // Defenders stay back as support
             targetX = Math.max(carrier.x + rinkW * 0.15, rinkX + rinkW * 0.55);
             targetY = player.homeY + Math.sin(Date.now() * 0.002 + idx) * rinkH * 0.08;
-        } else if (player.role === 'center') {
-            // Center goes slightly ahead of carrier, middle of ice
-            targetX = Math.max(carrier.x - rinkW * 0.1, rinkX + rinkW * 0.15);
-            targetY = rinkY + rinkH / 2 + Math.sin(Date.now() * 0.002 + idx) * rinkH * 0.12;
-        } else if (player.number === 2) {
-            // Wing 2: top lane, ahead of carrier
-            targetX = Math.max(carrier.x - rinkW * 0.12, rinkX + rinkW * 0.15);
-            targetY = rinkY + rinkH * 0.25 + Math.sin(Date.now() * 0.0025 + idx) * rinkH * 0.08;
         } else {
-            // Wing 3: bottom lane, ahead of carrier
+            // Forwards: go ahead of carrier in their own lane
             targetX = Math.max(carrier.x - rinkW * 0.12, rinkX + rinkW * 0.15);
-            targetY = rinkY + rinkH * 0.75 + Math.sin(Date.now() * 0.0025 + idx) * rinkH * 0.08;
-        }
-
-        // Avoid overlapping with other red players
-        for (const rp of redPlayers) {
-            if (rp === player || rp.role === 'goalie') continue;
-            const d = dist(player, rp);
-            if (d < 45 && d > 0) {
-                const ax = (player.x - rp.x) / d;
-                const ay = (player.y - rp.y) / d;
-                player.vx += ax * 0.4;
-                player.vy += ay * 0.4;
-            }
+            targetY = laneY + Math.sin(Date.now() * 0.002 + idx * 3) * rinkH * 0.05;
         }
 
         targetX = clamp(targetX, rinkX + 30, rinkX + rinkW - 30);
         targetY = clamp(targetY, rinkY + 30, rinkY + rinkH - 30);
         moveTowards(player, targetX, targetY, AI_SPEED);
+        separateFromTeammates(player);
     } else {
         // Defense: move towards puck or home
         let targetX = player.homeX;
@@ -629,6 +620,7 @@ function update() {
 
     levelTimer += 1/60;
     roundTimer += 1/60;
+    if (puckStealCooldown > 0) puckStealCooldown--;
 
     if (goalTimer > 0) {
         goalTimer--;
@@ -755,20 +747,36 @@ function update() {
                 b.x += nx * overlap * 0.5;
                 b.y += ny * overlap * 0.5;
 
-                // Transfer puck on collision (blue recovers more easily)
-                if (a.hasPuck) {
-                    const stealChance = b.team === 'blue' ? 0.65 : 0.4;
-                    if (Math.random() < stealChance) {
+                // Transfer puck on collision (with cooldown to prevent ping-pong)
+                if (puckStealCooldown <= 0) {
+                    if (a.hasPuck && b.team === 'blue') {
+                        // Blue steals from red: guaranteed
                         a.hasPuck = false;
                         b.hasPuck = true;
                         puck.owner = b;
-                    }
-                } else if (b.hasPuck) {
-                    const stealChance = a.team === 'blue' ? 0.65 : 0.4;
-                    if (Math.random() < stealChance) {
+                        puckStealCooldown = 30;
+                    } else if (b.hasPuck && a.team === 'blue') {
+                        // Blue steals from red: guaranteed
                         b.hasPuck = false;
                         a.hasPuck = true;
                         puck.owner = a;
+                        puckStealCooldown = 30;
+                    } else if (a.hasPuck && b.team === 'red') {
+                        // Red steals from blue: lower chance
+                        if (Math.random() < 0.3) {
+                            a.hasPuck = false;
+                            b.hasPuck = true;
+                            puck.owner = b;
+                            puckStealCooldown = 30;
+                        }
+                    } else if (b.hasPuck && a.team === 'red') {
+                        // Red steals from blue: lower chance
+                        if (Math.random() < 0.3) {
+                            b.hasPuck = false;
+                            a.hasPuck = true;
+                            puck.owner = a;
+                            puckStealCooldown = 30;
+                        }
                     }
                 }
 
@@ -848,6 +856,7 @@ function resetAfterGoal() {
     puck.owner = bluePlayers[3];
     bluePlayers[3].hasPuck = true;
     puck.targetPlayer = null;
+    puckStealCooldown = 0;
     controlledPlayerIndex = 3;
     passTargetIndex = 4;
 }
