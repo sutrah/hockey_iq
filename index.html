@@ -646,19 +646,26 @@ function update() {
     }
 
     // --- CONTROLLED PLAYER ---
-    const controlled = getControlledPlayer();
     const blueHasPuck = teamHasPuck('blue');
 
-    if (!isMobile) {
-        // PC: player follows mouse
-        if (controlled.hasPuck || (!blueHasPuck && controlled === getControlledPlayer())) {
-            moveTowards(controlled, mouseX, mouseY, PLAYER_SPEED);
+    // Auto-switch control to whichever blue player has the puck
+    if (blueHasPuck && puck.owner && puck.owner.team === 'blue') {
+        const carrierIdx = bluePlayers.indexOf(puck.owner);
+        if (carrierIdx > 0) { // Don't auto-switch to goalie (index 0)
+            controlledPlayerIndex = carrierIdx;
         }
+    }
+
+    const controlled = getControlledPlayer();
+
+    if (!isMobile) {
+        // PC: controlled player ALWAYS follows mouse
+        moveTowards(controlled, mouseX, mouseY, PLAYER_SPEED);
     }
 
     // --- BLUE AI ---
     bluePlayers.forEach((p, i) => {
-        if (p === controlled && (p.hasPuck || !blueHasPuck)) return; // controlled by player
+        if (i === controlledPlayerIndex) return; // always controlled by mouse, skip AI
         updateBlueAI(p, i);
     });
 
@@ -1408,14 +1415,27 @@ canvas.addEventListener('wheel', (e) => {
     }
 }, { passive: false });
 
-// Prevent context menu on canvas globally
+// --- SHOOT FUNCTION ---
+let lastShotTime = 0;
+function shootBlue() {
+    const now = Date.now();
+    if (now - lastShotTime < 80) return false; // prevent double-fire within same click
+    const carrier = getBlueWithPuck();
+    if (!carrier) return false;
+    lastShotTime = now;
+    const goalR = getGoalRight();
+    const goalCY = goalR.y + goalR.h / 2;
+    makeShot(carrier, goalR.x + goalR.w / 2, goalCY + (Math.random()-0.5) * goalR.h * 0.5);
+    return true;
+}
+
+// --- RIGHT-CLICK: prevent context menu + shoot ---
 canvas.addEventListener('contextmenu', (e) => {
     e.preventDefault();
     e.stopPropagation();
+    if (gameState === 'playing') shootBlue(); // SHOOT on contextmenu (most reliable)
     return false;
 });
-
-// Prevent context menu on document too as fallback
 document.addEventListener('contextmenu', (e) => {
     if (gameState === 'playing') {
         e.preventDefault();
@@ -1424,25 +1444,14 @@ document.addEventListener('contextmenu', (e) => {
     }
 });
 
-let rightClickShotFired = false;
-
-function shootBlue() {
-    const carrier = getBlueWithPuck();
-    if (!carrier) return false;
-    const goalR = getGoalRight();
-    const goalCY = goalR.y + goalR.h / 2;
-    makeShot(carrier, goalR.x + goalR.w / 2, goalCY + (Math.random()-0.5) * goalR.h * 0.5);
-    return true;
-}
-
+// --- MOUSE CLICK HANDLERS ---
 canvas.addEventListener('mousedown', (e) => {
     if (gameState !== 'playing') return;
 
     if (e.button === 2) {
-        // Right click: shoot (primary handler)
+        // Right click: shoot (backup for contextmenu)
         e.preventDefault();
-        rightClickShotFired = false;
-        if (shootBlue()) rightClickShotFired = true;
+        shootBlue();
         return;
     }
 
@@ -1463,15 +1472,6 @@ canvas.addEventListener('mousedown', (e) => {
             }
         }
     }
-});
-
-// Fallback: also handle right-click via mouseup in case mousedown doesn't fire for button 2
-canvas.addEventListener('mouseup', (e) => {
-    if (e.button === 2 && gameState === 'playing' && !rightClickShotFired) {
-        e.preventDefault();
-        shootBlue();
-    }
-    rightClickShotFired = false;
 });
 
 // --- INPUT: TOUCH ---
@@ -1592,6 +1592,11 @@ document.addEventListener('keydown', (e) => {
     }
     if (e.key === 'p' || e.key === 'P') {
         if (gameState === 'playing') togglePause();
+    }
+    // Space = shoot (backup for right-click)
+    if (e.key === ' ' || e.code === 'Space') {
+        e.preventDefault();
+        if (gameState === 'playing') shootBlue();
     }
 });
 
