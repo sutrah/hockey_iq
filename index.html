@@ -1296,6 +1296,13 @@ function drawHUD() {
     ctx.fillText('Level: ' + Math.floor(levelTimer), timerX, hudTop + 10);
     ctx.fillText('Round: ' + Math.floor(roundTimer), timerX, hudTop + 28);
 
+    // Controls hint
+    ctx.font = '10px Arial';
+    ctx.textAlign = 'left';
+    ctx.fillStyle = 'rgba(170,187,204,0.7)';
+    const hintY = H - 15;
+    ctx.fillText('Clic gauche: Passe | Clic gauche vers but: Tir | Clic droit / S / Espace: Tir | Molette: Changer joueur', 10, hintY);
+
     // Buttons
     drawButton(W - 50, hudTop + 55, '⏸', () => togglePause());
     drawButton(W - 50, hudTop + 85, '↻', () => resetGame());
@@ -1381,6 +1388,18 @@ function draw() {
         ctx.fill();
     }
 
+    // Draw shot trail
+    if (shotTrail && shotTrail.timer > 0) {
+        const alpha = shotTrail.timer / 15;
+        ctx.beginPath();
+        ctx.moveTo(shotTrail.x1, shotTrail.y1);
+        ctx.lineTo(shotTrail.x2, shotTrail.y2);
+        ctx.strokeStyle = `rgba(255, 100, 0, ${alpha})`;
+        ctx.lineWidth = 3;
+        ctx.stroke();
+        shotTrail.timer--;
+    }
+
     buttons.length = 0;
     drawHUD();
     drawMobileScore();
@@ -1417,61 +1436,89 @@ canvas.addEventListener('wheel', (e) => {
 
 // --- SHOOT FUNCTION ---
 let lastShotTime = 0;
-function shootBlue() {
+let shotTrail = null; // visual indicator for shots
+
+function shootBlueAt(targetX, targetY) {
     const now = Date.now();
-    if (now - lastShotTime < 80) return false; // prevent double-fire within same click
+    if (now - lastShotTime < 100) return false;
     const carrier = getBlueWithPuck();
     if (!carrier) return false;
     lastShotTime = now;
-    const goalR = getGoalRight();
-    const goalCY = goalR.y + goalR.h / 2;
-    makeShot(carrier, goalR.x + goalR.w / 2, goalCY + (Math.random()-0.5) * goalR.h * 0.5);
+    // Visual trail
+    shotTrail = { x1: carrier.x, y1: carrier.y, x2: targetX, y2: targetY, timer: 15 };
+    makeShot(carrier, targetX, targetY);
     return true;
 }
 
-// --- RIGHT-CLICK: prevent context menu + shoot ---
+function shootBlue() {
+    const carrier = getBlueWithPuck();
+    if (!carrier) return false;
+    const goalR = getGoalRight();
+    const goalCY = goalR.y + goalR.h / 2;
+    return shootBlueAt(goalR.x + goalR.w / 2, goalCY + (Math.random()-0.5) * goalR.h * 0.5);
+}
+
+// --- PREVENT CONTEXT MENU ---
 canvas.addEventListener('contextmenu', (e) => {
     e.preventDefault();
     e.stopPropagation();
-    if (gameState === 'playing') shootBlue(); // SHOOT on contextmenu (most reliable)
+    if (gameState === 'playing') shootBlue();
     return false;
 });
 document.addEventListener('contextmenu', (e) => {
     if (gameState === 'playing') {
         e.preventDefault();
-        e.stopPropagation();
         return false;
     }
 });
 
-// --- MOUSE CLICK HANDLERS ---
-canvas.addEventListener('mousedown', (e) => {
+// --- CLICK HANDLERS (mousedown + pointerdown for max compatibility) ---
+function handleClick(button, clientX, clientY) {
     if (gameState !== 'playing') return;
 
-    if (e.button === 2) {
-        // Right click: shoot (backup for contextmenu)
-        e.preventDefault();
+    // Right click: shoot
+    if (button === 2) {
         shootBlue();
         return;
     }
 
-    // Check HUD buttons (left click only)
-    if (e.button === 0) {
+    if (button === 0) {
+        // Check HUD buttons
         for (const btn of buttons) {
-            if (e.clientX >= btn.x && e.clientX <= btn.x + btn.w && e.clientY >= btn.y && e.clientY <= btn.y + btn.h) {
+            if (clientX >= btn.x && clientX <= btn.x + btn.w && clientY >= btn.y && clientY <= btn.y + btn.h) {
                 btn.action();
                 return;
             }
         }
-        // Left click: pass
+
+        // Left click with puck: SMART - shoot toward goal zone, pass otherwise
         const carrier = getBlueWithPuck();
         if (carrier) {
-            const target = bluePlayers[passTargetIndex];
-            if (target && target !== carrier) {
-                makePass(carrier, target);
+            const goalR = getGoalRight();
+            // If clicking in the offensive zone (right 35% of rink), SHOOT toward click position
+            if (clientX > rinkX + rinkW * 0.65) {
+                // Shoot toward where the user clicked
+                shootBlueAt(clientX, clientY);
+            } else {
+                // Pass to selected target
+                const target = bluePlayers[passTargetIndex];
+                if (target && target !== carrier) {
+                    makePass(carrier, target);
+                }
             }
         }
     }
+}
+
+canvas.addEventListener('mousedown', (e) => {
+    if (e.button === 2) e.preventDefault();
+    handleClick(e.button, e.clientX, e.clientY);
+});
+
+// pointerdown as additional handler (more modern API, better cross-browser)
+canvas.addEventListener('pointerdown', (e) => {
+    if (e.button === 2) e.preventDefault();
+    handleClick(e.button, e.clientX, e.clientY);
 });
 
 // --- INPUT: TOUCH ---
@@ -1593,8 +1640,8 @@ document.addEventListener('keydown', (e) => {
     if (e.key === 'p' || e.key === 'P') {
         if (gameState === 'playing') togglePause();
     }
-    // Space = shoot (backup for right-click)
-    if (e.key === ' ' || e.code === 'Space') {
+    // Space or S = shoot
+    if (e.key === ' ' || e.code === 'Space' || e.key === 's' || e.key === 'S') {
         e.preventDefault();
         if (gameState === 'playing') shootBlue();
     }
